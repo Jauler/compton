@@ -110,6 +110,12 @@ static void usage(const char *argv0, int ret) {
 	    "--inactive-dim value\n"
 	    "  Dim inactive windows. (0.0 - 1.0, defaults to 0)\n"
 	    "\n"
+	    "--bright-dim value\n"
+	    "  Dim bright windows. (0.0 - 1.0, defaults to 0)\n"
+	    "\n"
+	    "--bright-dim-sample-count value\n"
+	    "  How much samples to make for each dimension when estimating window brightness (1 - 100, defaults to 40)\n"
+	    "\n"
 	    "--active-opacity opacity\n"
 	    "  Default opacity for active windows. (0.0 - 1.0)\n"
 	    "\n"
@@ -410,6 +416,8 @@ static const struct option longopts[] = {
     {"use-damage", no_argument, NULL, 323},
     {"no-use-damage", no_argument, NULL, 324},
     {"no-vsync", no_argument, NULL, 325},
+    {"bright-dim", required_argument, NULL, 325},
+    {"bright-dim-sample-count", required_argument, NULL, 326},
     {"experimental-backends", no_argument, NULL, 733},
     {"monitor-repaint", no_argument, NULL, 800},
     {"diagnostics", no_argument, NULL, 801},
@@ -590,6 +598,14 @@ void get_cfg(options_t *opt, int argc, char *const *argv, bool shadow_enable,
 		case 261:
 			// --inactive-dim
 			opt->inactive_dim = atof(optarg);
+			break;
+		case 325:
+			// --bright-dim
+			opt->bright_dim = atof(optarg);
+			break;
+		case 326:
+			// --bright-dim-sample_count
+			opt->bright_dim_sample_count = atoi(optarg);
 			break;
 		P_CASEBOOL(262, mark_wmwin_focused);
 		case 263:
@@ -818,6 +834,8 @@ void get_cfg(options_t *opt, int argc, char *const *argv, bool shadow_enable,
 	opt->shadow_green = normalize_d(opt->shadow_green);
 	opt->shadow_blue = normalize_d(opt->shadow_blue);
 	opt->inactive_dim = normalize_d(opt->inactive_dim);
+	opt->bright_dim = normalize_d(opt->bright_dim);
+	opt->bright_dim_sample_count = normalize_i_range(opt->bright_dim_sample_count, 1, 100);
 	opt->frame_opacity = normalize_d(opt->frame_opacity);
 	opt->shadow_opacity = normalize_d(opt->shadow_opacity);
 	opt->refresh_rate = normalize_i_range(opt->refresh_rate, 0, 300);

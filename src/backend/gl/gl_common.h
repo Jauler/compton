@@ -66,6 +66,9 @@ struct gl_data {
 	GLuint back_texture, back_fbo;
 	GLuint present_prog;
 
+	double bright_dim;
+	int bright_dim_sample_count;
+
 	/// Called when an gl_texture is decoupled from the texture it refers. Returns
 	/// the decoupled user_data
 	void *(*decouple_texture_user_data)(backend_t *base, void *user_data);
