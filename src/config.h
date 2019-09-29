@@ -200,6 +200,10 @@ typedef struct options {
 	/// Whether to use fixed inactive dim opacity, instead of deciding
 	/// based on window opacity.
 	bool inactive_dim_fixed;
+	/// How much to dim bright window. 0.0 - 1.0, 0 to disable.
+	double bright_dim;
+	/// How much samples to make for each dimension (x,y) when estimating window brightness.
+	int bright_dim_sample_count;
 	/// Conditions of windows to have inverted colors.
 	c2_lptr_t *invert_color_list;
 	/// Rules to change window opacity.

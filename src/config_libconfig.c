@@ -282,6 +282,10 @@ char *parse_config_libconfig(options_t *opt, const char *config_file, bool *shad
 	lcfg_lookup_bool(&cfg, "inactive-opacity-override", &opt->inactive_opacity_override);
 	// --inactive-dim
 	config_lookup_float(&cfg, "inactive-dim", &opt->inactive_dim);
+	// --bright-dim
+	config_lookup_float(&cfg, "bright-dim", &opt->bright_dim);
+	// --bright-dim-sample-count
+	config_lookup_int(&cfg, "bright-dim-sample-count", &opt->bright_dim_sample_count);
 	// --mark-wmwin-focused
 	lcfg_lookup_bool(&cfg, "mark-wmwin-focused", &opt->mark_wmwin_focused);
 	// --mark-ovredir-focused

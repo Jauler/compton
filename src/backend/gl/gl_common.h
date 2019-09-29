@@ -64,6 +64,9 @@ struct gl_data {
 	gl_win_shader_t win_shader;
 	gl_fill_shader_t fill_shader;
 
+	double bright_dim;
+	int bright_dim_sample_count;
+
 	/// Called when an gl_texture is decoupled from the texture it refers. Returns
 	/// the decoupled user_data
 	void *(*decouple_texture_user_data)(backend_t *base, void *user_data);

@@ -211,10 +211,10 @@ static void _gl_compose(backend_t *base, struct gl_image *img, GLuint target,
 		glUniform1i(gd->win_shader.unifm_invert_color, img->color_inverted);
 	}
 	if (gd->win_shader.unifm_brightness_count >= 0){
-		glUniform1i(gd->win_shader.unifm_brightness_count, 40); //TODO: parameterize
+		glUniform1i(gd->win_shader.unifm_brightness_count, gd->bright_dim_sample_count);
 	}
 	if (gd->win_shader.unifm_sensitivity >= 0){
-		glUniform1f(gd->win_shader.unifm_sensitivity, 0.5); //TODO: parameterize
+		glUniform1f(gd->win_shader.unifm_sensitivity, (float)gd->bright_dim);
 	}
 	if (gd->win_shader.unifm_tex >= 0) {
 		glUniform1i(gd->win_shader.unifm_tex, 0);
