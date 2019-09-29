@@ -19,6 +19,8 @@ typedef struct {
 	GLuint prog;
 	GLint unifm_opacity;
 	GLint unifm_invert_color;
+	GLint unifm_brightness_count;
+	GLint unifm_sensitivity;
 	GLint unifm_tex;
 	GLint unifm_dim;
 } gl_win_shader_t;
