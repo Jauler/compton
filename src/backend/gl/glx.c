@@ -352,11 +352,6 @@ static backend_t *glx_init(session_t *ps) {
 	}
 
 	gd->gl.bright_dim = ps->o.bright_dim;
-	if (ps->o.bright_dim > 0.0) {
-		gd->gl.bright_dim_sample_count = ps->o.bright_dim_sample_count;
-	} else {
-		ps->o.bright_dim_sample_count = 0;
-	}
 
 	success = true;
 

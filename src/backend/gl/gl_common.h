@@ -67,7 +67,6 @@ struct gl_data {
 	GLuint present_prog;
 
 	double bright_dim;
-	int bright_dim_sample_count;
 
 	/// Called when an gl_texture is decoupled from the texture it refers. Returns
 	/// the decoupled user_data
