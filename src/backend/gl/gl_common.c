@@ -47,6 +47,22 @@ struct gl_blur_context {
 	int npasses;
 };
 
+/*
+ * Calculates next closest power of two of n
+ * ref: https://graphics.stanford.edu/~seander/bithacks.html#RoundUpPowerOf2
+ */
+uint32_t POT(uint32_t n)
+{
+	n--;
+	n |= n >> 1;
+	n |= n >> 2;
+	n |= n >> 4;
+	n |= n >> 8;
+	n |= n >> 16;
+	n++;
+	return n;
+}
+
 static GLint glGetUniformLocationChecked(GLuint p, const char *name) {
 	auto ret = glGetUniformLocation(p, name);
 	if (ret < 0) {
@@ -212,17 +228,16 @@ static void _gl_compose(backend_t *base, struct gl_image *img, GLuint target,
 	if (gd->win_shader.unifm_invert_color >= 0) {
 		glUniform1i(gd->win_shader.unifm_invert_color, img->color_inverted);
 	}
-	if (gd->win_shader.unifm_brightness_count >= 0){
-		glUniform1i(gd->win_shader.unifm_brightness_count, gd->bright_dim_sample_count);
-	}
-	if (gd->win_shader.unifm_sensitivity >= 0){
-		glUniform1f(gd->win_shader.unifm_sensitivity, (float)gd->bright_dim);
-	}
 	if (gd->win_shader.unifm_tex >= 0) {
 		glUniform1i(gd->win_shader.unifm_tex, 0);
 	}
 	if (gd->win_shader.unifm_dim >= 0) {
-		glUniform1f(gd->win_shader.unifm_dim, (float)img->dim);
+		float dim = (float)img->dim;
+		if (img->has_brightness)
+			dim += img->brightness * gd->bright_dim;
+		if (dim > 1.0)
+			dim = 1.0;
+		glUniform1f(gd->win_shader.unifm_dim, (float)dim);
 	}
 
 	// log_trace("Draw: %d, %d, %d, %d -> %d, %d (%d, %d) z %d\n",
@@ -278,6 +293,8 @@ static void _gl_compose(backend_t *base, struct gl_image *img, GLuint target,
 	glUseProgram(0);
 
 	gl_check_err();
+
+	img->has_brightness = false; // Brightness only applies for single frame.
 
 	return;
 }
@@ -344,6 +361,149 @@ x_rect_to_coords(int nrects, const rect_t *rects, int dst_x, int dst_y, int text
 	}
 }
 
+/*
+ * Downsamples texture by averaging neighbouring pixels, by
+ * recursively halving width and height until resulting texture
+ * is smaller or equal to max_width and max_height.
+ */
+static struct gl_framebuffer gl_downsample_texture(backend_t *base, GLuint texture,
+                                                   int width, int height,
+                                                   int max_width, int max_height) {
+
+	const int from_width = POT(width);
+	const int from_height = POT(height);
+	const int to_width = from_width > max_width ? from_width / 2 : from_width;
+	const int to_height = from_height > max_height ? from_height / 2 : from_height;
+
+	// Prepare coordinates
+	GLint coord[] = {
+		// top left
+		0, 0,                 // vertex coord
+		0, 0,                 // texture coord
+
+		// top right
+		to_width, 0, // vertex coord
+		from_width, 0, // texture coord
+
+		// bottom right
+		to_width, to_height,
+		from_width, from_height,
+
+		// bottom left
+		0, to_height,
+		0, from_height,
+	};
+
+	// Prepare image for rendering
+	struct gl_texture inner =
+	{
+		.refcount = 1,
+		.texture = texture,
+		.width = from_width,
+		.height = from_height,
+		.y_inverted = true,
+		.user_data = NULL
+	};
+	struct gl_image img =
+	{
+		.inner = &inner,
+		.opacity = 1.0,
+		.dim = 0.0,
+		.ewidth = from_width,
+		.eheight = from_height,
+		.has_alpha = true,
+		.color_inverted = false,
+		.has_brightness = false
+	};
+
+	// Enforce black color when sampling out of coordinates
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+	glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, (GLuint []){0, 0, 0, 0});
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	// Prepare texture into which downscaled texture will be rendered
+	GLuint target_texture;
+	glGenTextures(1, &target_texture);
+	glBindTexture(GL_TEXTURE_2D, target_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, to_width, to_height, 0,
+	             GL_BGR, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	// Prepare framebuffer into which downscaled texture will be rendered
+	GLuint fbo;
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+	                       target_texture, 0);
+	glClearBufferiv(GL_COLOR, 0, (GLuint[]){0, 0, 0, 0});
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+
+	// Perform downscaling render
+	_gl_compose(base, &img, fbo, coord, (GLuint[]){0, 1, 2, 2, 3, 0}, 1);
+
+	// Have we downscaled enough?
+	struct gl_framebuffer result;
+	if (to_width > max_width || to_height > max_width)
+	{
+		result = gl_downsample_texture(base, target_texture,
+		                               to_width, to_height,
+		                               max_width, max_height);
+
+		glDeleteFramebuffers(1, &fbo);
+		glDeleteTextures(1, &target_texture);
+	}
+	else
+	{
+		result.framebuffer = fbo;
+		result.width = to_width;
+		result.height = to_height;
+		result.texture = target_texture;
+	}
+
+	gl_check_err();
+
+	return result;
+}
+
+static float gl_estimate_brightness(backend_t *base, struct gl_image *img) {
+
+	// Downscale texture to size which is not too big for CPU
+	const int downsample_max_width = 32;
+	const int downsample_max_height = 32;
+	struct gl_framebuffer fbo;
+	fbo = gl_downsample_texture(base, img->inner->texture, img->inner->width, img->inner->height, downsample_max_width, downsample_max_height);
+
+	// Read pixels from downscaled framebuffer
+	const int pixel_count = fbo.width * fbo.height * 3; //3 for RGB
+	GLubyte * pixels = calloc(1, pixel_count);
+	glBindFramebuffer(GL_FRAMEBUFFER, fbo.framebuffer);
+	glReadnPixels(0, 0, fbo.width, fbo.height, GL_BGR, GL_UNSIGNED_BYTE, pixel_count, pixels);
+	glBindFramebuffer(GL_FRAMEBUFFER, 0);
+	glDeleteTextures(1, &fbo.texture);
+	glDeleteFramebuffers(1, &fbo.framebuffer);
+
+	// Calculate global average brightness
+	float avg = 0;
+	for (int i = 0; i < pixel_count; i++)
+		avg += pixels[i];
+	avg /= pixel_count;
+
+	// Compensate for the fact that our texture might not have been power-of-two
+	int texture_area = img->inner->width * img->inner->height;
+	int pot_texture_area = POT(img->inner->width) * POT(img->inner->height);
+	avg = avg * pot_texture_area / texture_area;
+
+	free(pixels);
+
+	return avg / 255;
+}
+
 // TODO: make use of reg_visible
 void gl_compose(backend_t *base, void *image_data, int dst_x, int dst_y,
                 const region_t *reg_tgt, const region_t *reg_visible attr_unused) {
@@ -358,6 +518,9 @@ void gl_compose(backend_t *base, void *image_data, int dst_x, int dst_y,
 		// Nothing to paint
 		return;
 	}
+
+	img->brightness = gl_estimate_brightness(base, img);
+	img->has_brightness = true;
 
 	// Until we start to use glClipControl, reg_tgt, dst_x and dst_y and
 	// in a different coordinate system than the one OpenGL uses.
@@ -576,33 +739,12 @@ const char *vertex_shader = GLSL(330,
 	uniform mat4 projection;
 	uniform vec2 orig;
 	uniform vec2 texorig;
-	uniform int brightness_count;
-	uniform sampler2D tex;
 	layout(location = 0) in vec2 coord;
 	layout(location = 1) in vec2 in_texcoord;
 	out vec2 texcoord;
-	out float brightness;
-
-	void estimate_brightness(out float brightness_value)
-	{
-		// Sample window texture in order to acquire an estimate on window brightness
-		brightness_value = 0;
-		for (float x = 0; x < 1.0; x += 1.0/brightness_count)
-			for (float y = 0; y < 1.0; y += 1.0/brightness_count)
-			{
-				vec4 color = texture(tex, vec2(x, y));
-				brightness_value += (color.r + color.g + color.b) / 3;
-			}
-		brightness_value /= brightness_count * brightness_count;
-	}
-
 	void main() {
 		gl_Position = projection * vec4(coord + orig, 0, 1);
 		texcoord = in_texcoord + texorig;
-
-		brightness = 0;
-		if (brightness_count > 0)
-			estimate_brightness(brightness);
 	}
 );
 // clang-format on
@@ -620,10 +762,8 @@ static int gl_win_shader_from_string(const char *vshader_str, const char *fshade
 	}
 
 	// Get uniform addresses
-	ret->unifm_brightness_count = glGetUniformLocationChecked(ret->prog, "brightness_count");
 	ret->unifm_opacity = glGetUniformLocationChecked(ret->prog, "opacity");
 	ret->unifm_invert_color = glGetUniformLocationChecked(ret->prog, "invert_color");
-	ret->unifm_sensitivity = glGetUniformLocationChecked(ret->prog, "sensitivity");
 	ret->unifm_tex = glGetUniformLocationChecked(ret->prog, "tex");
 	ret->unifm_dim = glGetUniformLocationChecked(ret->prog, "dim");
 
@@ -987,9 +1127,7 @@ const char *win_shader_glsl = GLSL(330,
 	uniform float opacity;
 	uniform float dim;
 	uniform bool invert_color;
-	uniform float sensitivity;
 	in vec2 texcoord;
-	in float brightness;
 	uniform sampler2D tex;
 
 	void main() {
@@ -998,7 +1136,6 @@ const char *win_shader_glsl = GLSL(330,
 			c = vec4(c.aaa - c.rgb, c.a);
 		}
 		c = vec4(c.rgb * (1.0 - dim), c.a) * opacity;
-		c.rgb = c.rgb * (1.0 - brightness * sensitivity);
 		gl_FragColor = c;
 	}
 );
@@ -1177,6 +1314,7 @@ static inline void gl_image_decouple(backend_t *base, struct gl_image *img) {
 	img->color_inverted = false;
 	img->dim = 0;
 	img->opacity = 1;
+	img->has_brightness = false;
 }
 
 static void gl_image_apply_alpha(backend_t *base, struct gl_image *img,

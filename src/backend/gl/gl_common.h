@@ -18,8 +18,6 @@ typedef struct {
 	GLuint prog;
 	GLint unifm_opacity;
 	GLint unifm_invert_color;
-	GLint unifm_brightness_count;
-	GLint unifm_sensitivity;
 	GLint unifm_tex;
 	GLint unifm_dim;
 } gl_win_shader_t;
@@ -37,6 +35,12 @@ typedef struct {
 	GLint color_loc;
 } gl_fill_shader_t;
 
+struct gl_framebuffer {
+	GLuint framebuffer;
+	GLuint texture;
+	int width, height;
+};
+
 struct gl_texture {
 	int refcount;
 	GLuint texture;
@@ -53,6 +57,8 @@ typedef struct gl_image {
 	int ewidth, eheight;
 	bool has_alpha;
 	bool color_inverted;
+	bool has_brightness;
+	double brightness;
 } gl_image_t;
 
 struct gl_data {
