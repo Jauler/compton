@@ -222,6 +222,11 @@ static void _gl_compose(backend_t *base, struct gl_image *img, GLuint target,
 
 	assert(gd->win_shader.prog);
 	glUseProgram(gd->win_shader.prog);
+
+	int pml = glGetUniformLocationChecked(gd->win_shader.prog, "dimensions");
+	glUniform2f(pml, img->inner->width, img->inner->height);
+
+
 	if (gd->win_shader.unifm_opacity >= 0) {
 		glUniform1f(gd->win_shader.unifm_opacity, (float)img->opacity);
 	}
@@ -431,8 +436,8 @@ static struct gl_framebuffer gl_downsample_texture(backend_t *base, GLuint textu
 	glBindTexture(GL_TEXTURE_2D, target_texture);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, to_width, to_height, 0,
 	             GL_BGR, GL_UNSIGNED_BYTE, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 	glBindTexture(GL_TEXTURE_2D, 0);
 
 	// Prepare framebuffer into which downscaled texture will be rendered
@@ -441,8 +446,8 @@ static struct gl_framebuffer gl_downsample_texture(backend_t *base, GLuint textu
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
 	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
 	                       target_texture, 0);
-	glClearBufferiv(GL_COLOR, 0, (GLuint[]){0, 0, 0, 0});
 	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	glClearBufferiv(GL_COLOR, 0, (GLuint[]){0, 0, 0, 0});
 
 	// Perform downscaling render
 	_gl_compose(base, &img, fbo, coord, (GLuint[]){0, 1, 2, 2, 3, 0}, 1);
@@ -495,8 +500,8 @@ static float gl_estimate_brightness(backend_t *base, struct gl_image *img) {
 	avg /= pixel_count;
 
 	// Compensate for the fact that our texture might not have been power-of-two
-	int texture_area = img->inner->width * img->inner->height;
-	int pot_texture_area = POT(img->inner->width) * POT(img->inner->height);
+	float texture_area = img->inner->width * img->inner->height;
+	float pot_texture_area = POT(img->inner->width) * POT(img->inner->height);
 	avg = avg * pot_texture_area / texture_area;
 
 	free(pixels);
@@ -739,12 +744,13 @@ const char *vertex_shader = GLSL(330,
 	uniform mat4 projection;
 	uniform vec2 orig;
 	uniform vec2 texorig;
+	uniform vec2 dimensions;
 	layout(location = 0) in vec2 coord;
 	layout(location = 1) in vec2 in_texcoord;
 	out vec2 texcoord;
 	void main() {
 		gl_Position = projection * vec4(coord + orig, 0, 1);
-		texcoord = in_texcoord + texorig;
+		texcoord = in_texcoord/dimensions + texorig;
 	}
 );
 // clang-format on
@@ -1131,7 +1137,7 @@ const char *win_shader_glsl = GLSL(330,
 	uniform sampler2D tex;
 
 	void main() {
-		vec4 c = texelFetch(tex, ivec2(texcoord), 0);
+		vec4 c = texture2D(tex, vec2(texcoord), 0);
 		if (invert_color) {
 			c = vec4(c.aaa - c.rgb, c.a);
 		}
