@@ -20,6 +20,8 @@ typedef struct {
 	GLint unifm_invert_color;
 	GLint unifm_tex;
 	GLint unifm_dim;
+	GLint unifm_brightness_texture;
+	GLint unifm_sensitivity;
 } gl_win_shader_t;
 
 // Program and uniforms for blur shader
@@ -34,12 +36,6 @@ typedef struct {
 	GLuint prog;
 	GLint color_loc;
 } gl_fill_shader_t;
-
-struct gl_framebuffer {
-	GLuint framebuffer;
-	GLuint texture;
-	int width, height;
-};
 
 struct gl_texture {
 	int refcount;
@@ -57,8 +53,6 @@ typedef struct gl_image {
 	int ewidth, eheight;
 	bool has_alpha;
 	bool color_inverted;
-	bool has_brightness;
-	double brightness;
 } gl_image_t;
 
 struct gl_data {
@@ -72,6 +66,8 @@ struct gl_data {
 	GLuint back_texture, back_fbo;
 	GLuint present_prog;
 
+	GLuint bright_dim_prog;
+	GLuint bright_dim_tex_unifm;
 	double bright_dim;
 
 	/// Called when an gl_texture is decoupled from the texture it refers. Returns

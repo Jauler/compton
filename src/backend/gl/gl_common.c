@@ -199,6 +199,133 @@ static void gl_free_prog_main(gl_win_shader_t *pprogram) {
 	}
 }
 
+static GLuint gl_estimate_texture_brightness(backend_t *base, GLuint texture,
+                                             int width, int height, struct gl_image *original_img) {
+	struct gl_data *gd = (void *)base;
+	const int max_width  = 1;
+	const int max_height = 1;
+	const int from_width = POT(width);
+	const int from_height = POT(height);
+	const int to_width = from_width > max_width ? from_width / 2 : from_width;
+	const int to_height = from_height > max_height ? from_height / 2 : from_height;
+
+	// Prepare coordinates
+	GLint coord[] = {
+		// top left
+		0, 0,                 // vertex coord
+		0, 0,                 // texture coord
+
+		// top right
+		to_width, 0, // vertex coord
+		1, 0, // texture coord
+
+		// bottom right
+		to_width, to_height,
+		1, 1,
+
+		// bottom left
+		0, to_height,
+		0, 1,
+	};
+
+	// Vertex indices
+	GLuint indices[] = {0, 1, 2, 2, 3, 0};
+
+	// Prepare texture into which downscaled image will be rendered
+	GLuint target_texture;
+	glGenTextures(1, &target_texture);
+	glBindTexture(GL_TEXTURE_2D, target_texture);
+	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, to_width, to_height, 0,
+	             GL_BGR, GL_UNSIGNED_BYTE, NULL);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glBindTexture(GL_TEXTURE_2D, 0);
+
+	// Prepare framebuffer into which downscaled texture will be rendered
+	GLuint fbo;
+	glGenFramebuffers(1, &fbo);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
+	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+	                       target_texture, 0);
+	glDrawBuffer(GL_COLOR_ATTACHMENT0);
+	glClearBufferiv(GL_COLOR, 0, (GLuint[]){0, 0, 0, 0});
+
+	// Enforce black color when sampling out of coordinates
+	glActiveTexture(GL_TEXTURE0);
+	glBindTexture(GL_TEXTURE_2D, texture);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
+	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
+	glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, (GLuint []){0, 0, 0, 0});
+	gl_check_err();
+
+	// Prepare shaders input
+	glUseProgram(gd->bright_dim_prog);
+	glUniform1i(gd->bright_dim_tex_unifm, 0);
+	gl_check_err();
+
+	// Prepare render input
+	GLuint vao;
+	glGenVertexArrays(1, &vao);
+	glBindVertexArray(vao);
+	GLuint bo[2];
+	glGenBuffers(2, bo);
+	glBindBuffer(GL_ARRAY_BUFFER, bo[0]);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, bo[1]);
+	glBufferData(GL_ARRAY_BUFFER, (long)sizeof(*coord) * 16, coord, GL_STATIC_DRAW);
+	glBufferData(GL_ELEMENT_ARRAY_BUFFER, (long)sizeof(*indices) * 6,
+	             indices, GL_STATIC_DRAW);
+	gl_check_err();
+
+	glEnableVertexAttribArray(vert_coord_loc);
+	glEnableVertexAttribArray(vert_in_texcoord_loc);
+	glVertexAttribPointer(vert_coord_loc, 2, GL_INT, GL_FALSE, sizeof(GLint) * 4, NULL);
+	glVertexAttribPointer(vert_in_texcoord_loc, 2, GL_INT, GL_FALSE,
+	                      sizeof(GLint) * 4, (void *)(sizeof(GLint) * 2));
+
+	// Render into framebuffer
+	gl_check_err();
+	glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, NULL);
+	gl_check_err();
+
+	// Cleanup
+	glDisableVertexAttribArray(vert_coord_loc);
+	glDisableVertexAttribArray(vert_in_texcoord_loc);
+	glBindVertexArray(0);
+	glDeleteVertexArrays(1, &vao);
+
+	glBindTexture(GL_TEXTURE_2D, 0);
+	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+	glDrawBuffer(GL_BACK);
+
+	glBindBuffer(GL_ARRAY_BUFFER, 0);
+	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+	glDeleteBuffers(2, bo);
+
+	glUseProgram(0);
+
+	// Have we downscaled enough?
+	GLuint result;
+	if (to_width > max_width || to_height > max_width)
+	{
+		result = gl_estimate_texture_brightness(base, target_texture,
+		                                        to_width, to_height, original_img);
+		glDeleteTextures(1, &target_texture);
+	}
+	else
+	{
+		result = target_texture;
+	}
+
+	glDeleteFramebuffers(1, &fbo);
+
+	gl_check_err();
+
+	return result;
+}
+
+
 /**
  * Render a region with texture data.
  *
@@ -218,14 +345,13 @@ static void _gl_compose(backend_t *base, struct gl_image *img, GLuint target,
 		return;
 	}
 
-	bool dual_texture = false;
+	GLuint brightness_texture = gl_estimate_texture_brightness(base, img->inner->texture,
+			                                                 img->inner->width,
+			                                                 img->inner->height, img);
+
 
 	assert(gd->win_shader.prog);
 	glUseProgram(gd->win_shader.prog);
-
-	int pml = glGetUniformLocationChecked(gd->win_shader.prog, "dimensions");
-	glUniform2f(pml, img->inner->width, img->inner->height);
-
 
 	if (gd->win_shader.unifm_opacity >= 0) {
 		glUniform1f(gd->win_shader.unifm_opacity, (float)img->opacity);
@@ -237,24 +363,23 @@ static void _gl_compose(backend_t *base, struct gl_image *img, GLuint target,
 		glUniform1i(gd->win_shader.unifm_tex, 0);
 	}
 	if (gd->win_shader.unifm_dim >= 0) {
-		float dim = (float)img->dim;
-		if (img->has_brightness)
-			dim += img->brightness * gd->bright_dim;
-		if (dim > 1.0)
-			dim = 1.0;
-		glUniform1f(gd->win_shader.unifm_dim, (float)dim);
+		glUniform1f(gd->win_shader.unifm_dim, (float)img->dim);
+	}
+	if (gd->win_shader.unifm_brightness_texture >= 0) {
+		glUniform1i(gd->win_shader.unifm_brightness_texture, 1);
+	}
+	if (gd->win_shader.unifm_sensitivity >= 0) {
+		glUniform1f(gd->win_shader.unifm_sensitivity, gd->bright_dim);
 	}
 
 	// log_trace("Draw: %d, %d, %d, %d -> %d, %d (%d, %d) z %d\n",
 	//          x, y, width, height, dx, dy, ptex->width, ptex->height, z);
 
 	// Bind texture
+	glActiveTexture(GL_TEXTURE1);
+	glBindTexture(GL_TEXTURE_2D, brightness_texture);
+	glActiveTexture(GL_TEXTURE0);
 	glBindTexture(GL_TEXTURE_2D, img->inner->texture);
-	if (dual_texture) {
-		glActiveTexture(GL_TEXTURE1);
-		glBindTexture(GL_TEXTURE_2D, img->inner->texture);
-		glActiveTexture(GL_TEXTURE0);
-	}
 
 	GLuint vao;
 	glGenVertexArrays(1, &vao);
@@ -285,21 +410,15 @@ static void _gl_compose(backend_t *base, struct gl_image *img, GLuint target,
 	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
 	glDrawBuffer(GL_BACK);
 
-	if (dual_texture) {
-		glActiveTexture(GL_TEXTURE1);
-		glBindTexture(GL_TEXTURE_2D, 0);
-		glActiveTexture(GL_TEXTURE0);
-	}
-
 	glBindBuffer(GL_ARRAY_BUFFER, 0);
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
 	glDeleteBuffers(2, bo);
 
+	glDeleteTextures(1, &brightness_texture);
+
 	glUseProgram(0);
 
 	gl_check_err();
-
-	img->has_brightness = false; // Brightness only applies for single frame.
 
 	return;
 }
@@ -369,146 +488,8 @@ x_rect_to_coords(int nrects, const rect_t *rects, int dst_x, int dst_y, int text
 /*
  * Downsamples texture by averaging neighbouring pixels, by
  * recursively halving width and height until resulting texture
- * is smaller or equal to max_width and max_height.
+ * is of 1x1 size.
  */
-static struct gl_framebuffer gl_downsample_texture(backend_t *base, GLuint texture,
-                                                   int width, int height,
-                                                   int max_width, int max_height) {
-
-	const int from_width = POT(width);
-	const int from_height = POT(height);
-	const int to_width = from_width > max_width ? from_width / 2 : from_width;
-	const int to_height = from_height > max_height ? from_height / 2 : from_height;
-
-	// Prepare coordinates
-	GLint coord[] = {
-		// top left
-		0, 0,                 // vertex coord
-		0, 0,                 // texture coord
-
-		// top right
-		to_width, 0, // vertex coord
-		from_width, 0, // texture coord
-
-		// bottom right
-		to_width, to_height,
-		from_width, from_height,
-
-		// bottom left
-		0, to_height,
-		0, from_height,
-	};
-
-	// Prepare image for rendering
-	struct gl_texture inner =
-	{
-		.refcount = 1,
-		.texture = texture,
-		.width = from_width,
-		.height = from_height,
-		.y_inverted = true,
-		.user_data = NULL
-	};
-	struct gl_image img =
-	{
-		.inner = &inner,
-		.opacity = 1.0,
-		.dim = 0.0,
-		.ewidth = from_width,
-		.eheight = from_height,
-		.has_alpha = true,
-		.color_inverted = false,
-		.has_brightness = false
-	};
-
-	// Enforce black color when sampling out of coordinates
-	glBindTexture(GL_TEXTURE_2D, texture);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_BORDER);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_BORDER);
-	glTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_BORDER_COLOR, (GLuint []){0, 0, 0, 0});
-	glBindTexture(GL_TEXTURE_2D, 0);
-
-	// Prepare texture into which downscaled texture will be rendered
-	GLuint target_texture;
-	glGenTextures(1, &target_texture);
-	glBindTexture(GL_TEXTURE_2D, target_texture);
-	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, to_width, to_height, 0,
-	             GL_BGR, GL_UNSIGNED_BYTE, NULL);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-	glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-	glBindTexture(GL_TEXTURE_2D, 0);
-
-	// Prepare framebuffer into which downscaled texture will be rendered
-	GLuint fbo;
-	glGenFramebuffers(1, &fbo);
-	glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
-	glFramebufferTexture2D(GL_DRAW_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
-	                       target_texture, 0);
-	glDrawBuffer(GL_COLOR_ATTACHMENT0);
-	glClearBufferiv(GL_COLOR, 0, (GLuint[]){0, 0, 0, 0});
-
-	// Perform downscaling render
-	_gl_compose(base, &img, fbo, coord, (GLuint[]){0, 1, 2, 2, 3, 0}, 1);
-
-	// Have we downscaled enough?
-	struct gl_framebuffer result;
-	if (to_width > max_width || to_height > max_width)
-	{
-		result = gl_downsample_texture(base, target_texture,
-		                               to_width, to_height,
-		                               max_width, max_height);
-
-		glDeleteFramebuffers(1, &fbo);
-		glDeleteTextures(1, &target_texture);
-	}
-	else
-	{
-		result.framebuffer = fbo;
-		result.width = to_width;
-		result.height = to_height;
-		result.texture = target_texture;
-	}
-
-	gl_check_err();
-
-	return result;
-}
-
-static float gl_estimate_brightness(backend_t *base, struct gl_image *img) {
-
-	// Downscale texture to size which is not too big for CPU
-	const int downsample_max_width = 32;
-	const int downsample_max_height = 32;
-	struct gl_framebuffer fbo;
-	fbo = gl_downsample_texture(base, img->inner->texture, img->inner->width, img->inner->height, downsample_max_width, downsample_max_height);
-
-	// Read pixels from downscaled framebuffer
-	const int pixel_count = fbo.width * fbo.height * 3; //3 for RGB
-	GLubyte * pixels = calloc(1, pixel_count);
-	glBindFramebuffer(GL_FRAMEBUFFER, fbo.framebuffer);
-	glReadnPixels(0, 0, fbo.width, fbo.height, GL_BGR, GL_UNSIGNED_BYTE, pixel_count, pixels);
-	glBindFramebuffer(GL_FRAMEBUFFER, 0);
-	glDeleteTextures(1, &fbo.texture);
-	glDeleteFramebuffers(1, &fbo.framebuffer);
-
-	// Calculate global average brightness
-	float avg = 0;
-	for (int i = 0; i < pixel_count; i++)
-		avg += pixels[i];
-	avg /= pixel_count;
-
-	// Compensate for the fact that our texture might not have been power-of-two
-	float texture_area = img->inner->width * img->inner->height;
-	float pot_texture_area = POT(img->inner->width) * POT(img->inner->height);
-	avg = avg * pot_texture_area / texture_area;
-
-	free(pixels);
-
-	return avg / 255;
-}
-
 // TODO: make use of reg_visible
 void gl_compose(backend_t *base, void *image_data, int dst_x, int dst_y,
                 const region_t *reg_tgt, const region_t *reg_visible attr_unused) {
@@ -523,9 +504,6 @@ void gl_compose(backend_t *base, void *image_data, int dst_x, int dst_y,
 		// Nothing to paint
 		return;
 	}
-
-	img->brightness = gl_estimate_brightness(base, img);
-	img->has_brightness = true;
 
 	// Until we start to use glClipControl, reg_tgt, dst_x and dst_y and
 	// in a different coordinate system than the one OpenGL uses.
@@ -744,13 +722,12 @@ const char *vertex_shader = GLSL(330,
 	uniform mat4 projection;
 	uniform vec2 orig;
 	uniform vec2 texorig;
-	uniform vec2 dimensions;
 	layout(location = 0) in vec2 coord;
 	layout(location = 1) in vec2 in_texcoord;
 	out vec2 texcoord;
 	void main() {
 		gl_Position = projection * vec4(coord + orig, 0, 1);
-		texcoord = in_texcoord/dimensions + texorig;
+		texcoord = in_texcoord + texorig;
 	}
 );
 // clang-format on
@@ -772,6 +749,8 @@ static int gl_win_shader_from_string(const char *vshader_str, const char *fshade
 	ret->unifm_invert_color = glGetUniformLocationChecked(ret->prog, "invert_color");
 	ret->unifm_tex = glGetUniformLocationChecked(ret->prog, "tex");
 	ret->unifm_dim = glGetUniformLocationChecked(ret->prog, "dim");
+	ret->unifm_brightness_texture = glGetUniformLocationChecked(ret->prog, "brightness_texture");
+	ret->unifm_sensitivity = glGetUniformLocationChecked(ret->prog, "sensitivity");
 
 	glUseProgram(ret->prog);
 	int orig_loc = glGetUniformLocation(ret->prog, "orig");
@@ -810,6 +789,12 @@ void gl_resize(struct gl_data *gd, int width, int height) {
 	pml = glGetUniformLocationChecked(gd->present_prog, "projection");
 	glUniformMatrix4fv(pml, 1, false, projection_matrix[0]);
 
+	glUseProgram(gd->bright_dim_prog);
+	pml = glGetUniformLocationChecked(gd->bright_dim_prog, "projection");
+	glUniformMatrix4fv(pml, 1, false, projection_matrix[0]);
+
+
+
 	glBindTexture(GL_TEXTURE_2D, gd->back_texture);
 	glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_BGR,
 	             GL_UNSIGNED_BYTE, NULL);
@@ -830,6 +815,14 @@ static const char fill_frag[] = GLSL(330,
 	uniform vec4 color;
 	void main() {
 		gl_FragColor = color;
+	}
+);
+
+static const char downscaling_frag[] = GLSL(330,
+	uniform sampler2D tex;
+	in vec2 texcoord;
+	void main() {
+		gl_FragColor = texture2D(tex, vec2(texcoord.xy), 0);
 	}
 );
 
@@ -1135,13 +1128,20 @@ const char *win_shader_glsl = GLSL(330,
 	uniform bool invert_color;
 	in vec2 texcoord;
 	uniform sampler2D tex;
+	uniform sampler2D brightness_texture;
+	uniform float sensitivity;
 
 	void main() {
-		vec4 c = texture2D(tex, vec2(texcoord), 0);
+		vec4 c = texelFetch(tex, ivec2(texcoord), 0);
 		if (invert_color) {
 			c = vec4(c.aaa - c.rgb, c.a);
 		}
 		c = vec4(c.rgb * (1.0 - dim), c.a) * opacity;
+
+		vec3 rgb_brightness = texture2D(brightness_texture, vec2(0.5, 0.5), 0).rgb;
+		float brightness = (rgb_brightness[0] + rgb_brightness[1] + rgb_brightness[2]) / 3;
+		c.rgb = c.rgb * (1 - brightness * sensitivity);
+
 		gl_FragColor = c;
 	}
 );
@@ -1200,6 +1200,13 @@ bool gl_init(struct gl_data *gd, session_t *ps) {
 	glUseProgram(gd->present_prog);
 	glUniform1i(glGetUniformLocationChecked(gd->present_prog, "tex"), 0);
 	glUseProgram(0);
+
+	gd->bright_dim_prog = gl_create_program_from_str(vertex_shader, downscaling_frag);
+	if (!gd->bright_dim_prog) {
+		log_error("Failed to create the downscaling shader");
+		return false;
+	}
+	gd->bright_dim_tex_unifm = glGetUniformLocationChecked(gd->bright_dim_prog, "tex");
 
 	// Set up the size of the viewport. We do this last because it expects the blur
 	// textures are already set up.
@@ -1320,7 +1327,6 @@ static inline void gl_image_decouple(backend_t *base, struct gl_image *img) {
 	img->color_inverted = false;
 	img->dim = 0;
 	img->opacity = 1;
-	img->has_brightness = false;
 }
 
 static void gl_image_apply_alpha(backend_t *base, struct gl_image *img,
