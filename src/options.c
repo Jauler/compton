@@ -413,7 +413,7 @@ static const struct option longopts[] = {
     {"use-damage", no_argument, NULL, 323},
     {"no-use-damage", no_argument, NULL, 324},
     {"no-vsync", no_argument, NULL, 325},
-    {"bright-dim", required_argument, NULL, 325},
+    {"bright-dim", required_argument, NULL, 326},
     {"experimental-backends", no_argument, NULL, 733},
     {"monitor-repaint", no_argument, NULL, 800},
     {"diagnostics", no_argument, NULL, 801},
@@ -594,10 +594,6 @@ void get_cfg(options_t *opt, int argc, char *const *argv, bool shadow_enable,
 		case 261:
 			// --inactive-dim
 			opt->inactive_dim = atof(optarg);
-			break;
-		case 325:
-			// --bright-dim
-			opt->bright_dim = atof(optarg);
 			break;
 		P_CASEBOOL(262, mark_wmwin_focused);
 		case 263:
@@ -798,6 +794,10 @@ void get_cfg(options_t *opt, int argc, char *const *argv, bool shadow_enable,
 			break;
 		case 325:
 			opt->vsync = false;
+			break;
+		case 326:
+			// --bright-dim
+			opt->bright_dim = atof(optarg);
 			break;
 		P_CASEBOOL(733, experimental_backends);
 		P_CASEBOOL(800, monitor_repaint);
